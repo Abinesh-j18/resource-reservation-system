@@ -1,0 +1,71 @@
+// Prisma schema for Resource Reservation Management System
+// SQLite fallback for zero-config offline local development
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model User {
+  id           String        @id @default(cuid())
+  name         String
+  email        String        @unique
+  role         String        @default("MEMBER") // ADMIN, MEMBER
+  createdAt    DateTime      @default(now())
+  reservations Reservation[]
+
+  @@map("users")
+}
+
+model ResourceCategory {
+  id          String     @id @default(cuid())
+  name        String     @unique
+  description String?
+  createdAt   DateTime   @default(now())
+  resources   Resource[]
+
+  @@map("resource_categories")
+}
+
+model Resource {
+  id           String           @id @default(cuid())
+  name         String
+  categoryId   String
+  category     ResourceCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  capacity     Int              @default(1)
+  location     String
+  status       String           @default("AVAILABLE") // AVAILABLE, MAINTENANCE
+  description  String?
+  createdAt    DateTime         @default(now())
+  reservations Reservation[]
+
+  @@index([categoryId])
+  @@index([status])
+  @@map("resources")
+}
+
+model Reservation {
+  id         String   @id @default(cuid())
+  title      String
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  resourceId String
+  resource   Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+  startTime  DateTime
+  endTime    DateTime
+  status     String   @default("CONFIRMED") // CONFIRMED, CANCELLED
+  purpose    String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  // Composite index on [resourceId, startTime, endTime] specifically required for high-performance conflict detection
+  @@index([resourceId, startTime, endTime])
+  @@index([userId])
+  @@index([status])
+  @@index([startTime])
+  @@map("reservations")
+}
