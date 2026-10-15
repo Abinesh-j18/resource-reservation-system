@@ -1,47 +1,50 @@
-# PrimeReserve &mdash; Resource Reservation Management System
+# PrimeReserve — Enterprise Resource Reservation Management System
 
-A production-grade, centralized web application built for **PrimeWave Lab** to coordinate shared physical resources (conference suites, high-precision laboratory test benches, company vehicles, and AV gear), eliminate overlapping bookings, and track real-time resource availability.
+**PrimeReserve** is a high-performance, full-stack resource reservation and scheduling platform engineered to coordinate shared corporate and technical physical assets (executive conference suites, RF and acoustic testing labs, calibration rigs, and corporate fleet vehicles) with zero scheduling collisions.
 
-Built with **Next.js (App Router)**, **TypeScript**, **PostgreSQL**, **Prisma ORM**, **Tailwind CSS**, and **shadcn/ui**.
-
----
-
-## 🌟 Key Highlights & Engineering Features
-
-- **Double-Booking Prevention Engine**: Enforces strict mathematical overlap detection wrapped in atomic database transactions (`prisma.$transaction`), eliminating race conditions.
-- **Instant Conflict Alerting (HTTP 409)**: Real-time user feedback specifying conflicting times, users, and reasons when booking overlap occurs.
-- **Interactive Schedule Timeline**: Hour-by-hour visual timeline of all resources with date-switching, status indicators, and one-click booking triggers.
-- **Filterable Resource Catalog**: Multi-criteria search and filtering by Category, Operational Status, and Capacity limits.
-- **Admin Management Modal**: Real-time resource onboarding, editing, and maintenance status toggling.
-- **Composite Index Optimization**: Optimized compound B-Tree indexing on `[resourceId, startTime, endTime]` for query speeds at scale.
-- **Reservation Lifecycle Management**: Confirmations, audit history, and one-click cancellation dialogs to release capacity.
+Built with **Next.js 14 (App Router)**, **TypeScript**, **PostgreSQL**, **Prisma ORM**, **Tailwind CSS**, and **shadcn/ui**.
 
 ---
 
-## 🏗️ Architecture & Trade-Off Summary
+## 🌟 System Highlights & Key Features
 
-### 1. Concurrency & Conflict Prevention Algorithm
-In multi-user environments, race conditions occur when two users attempt to reserve the same resource at overlapping intervals simultaneously.
-To guarantee ACID consistency, PrimeReserve executes booking validation and insertion within a **Database Transaction**:
-
-$$\text{Conflict Condition: } (\text{existing.startTime} < \text{newEndTime}) \land (\text{existing.endTime} > \text{newStartTime}) \land (\text{existing.status} \neq \text{'CANCELLED'})$$
-
-- **Implementation**: Handled in both Server Actions (`lib/actions/reservation-actions.ts`) and REST API handlers (`app/api/reservations/route.ts`).
-- **HTTP 409 Conflict Response**: If an overlap is detected, the transaction aborts and returns an explicit `ConflictError` containing the exact conflicting booking title, time range, and reserving user.
-- **Maintenance Lock**: Resources flagged as `MAINTENANCE` reject all new reservation attempts.
-
-### 2. Database Indexing Trade-Offs
-- We established a composite index on `[resourceId, startTime, endTime]`.
-- **Trade-Off Rationale**: While adding write overhead during record insertion, it transforms conflict queries from a full-table sequential scan into an indexed index-range scan. For scheduling engines where reads/conflict validations outnumber writes by 20:1, this trade-off is critical for performance.
-
-### 3. Next.js App Router Patterns
-- **Server Components (RSC)**: Dashboard, Resource Catalog, and Schedule pages fetch data directly on the server via Prisma without client-side waterfall requests.
-- **Client Components**: Granularly scoped to interactive islands (Dialogs, Filter bars, Date-pickers, Form validation via React Hook Form + Zod).
-- **Server Actions & Revalidation**: Mutations invoke Server Actions with `revalidatePath` to trigger instant cache invalidation without full page reloads.
+* **ACID Double-Booking Prevention Engine**: Enforces mathematical interval overlap checking inside atomic PostgreSQL transactions (`prisma.$transaction`), completely eliminating race conditions.
+* **Instant Conflict Diagnostics (HTTP 409)**: Real-time conflict feedback identifying the exact conflicting reservation title, reserving user, and existing time boundaries.
+* **Interactive Hour-by-Hour Timeline Grid**: Visual timeline view allowing real-time schedule inspection across all resources with day-by-day navigation and instant slot selection.
+* **Multi-Criteria Resource Catalog**: Instant search and filtering by Category (Conference Rooms, Labs, Fleet Vehicles), Operational Status, and Minimum Capacity limits.
+* **Dedicated Resource Specification View**: Dynamic routes (`/resources/[id]`) displaying physical location, capacity, technical specifications, and upcoming reservation queues.
+* **Direct Booking Form**: Standalone reservation form (`/reservations/new`) with client-side datetime validation, duration boundary enforcement, and server validation.
+* **Maintenance & Operational Safeguards**: Administrative maintenance toggles that prevent bookings on resources undergoing service or calibration.
+* **Non-Destructive Soft Cancellation**: Reservation cancellations preserve historical audit trails while freeing the time slot for immediate re-booking.
+* **Composite Query Optimization**: Compound B-Tree indexing on `(resourceId, startTime, endTime)` for fast collision lookups at scale.
+* **Resilient Dual-Mode Operation**: Runs natively on PostgreSQL with seamless fallback to an in-memory store for offline demonstrations.
 
 ---
 
-## 📊 Database Design (Entity-Relationship Diagram)
+## 🏗️ Technical Architecture & Concurrency Model
+
+### 1. Mathematical Overlap Prevention Algorithm
+To prevent double bookings in multi-user concurrent environments, PrimeReserve uses **half-open intervals** $[start, end)$. Two reservations overlap if and only if:
+
+$$\text{Overlap} \iff (\text{ExistingStart} < \text{NewEnd}) \land (\text{ExistingEnd} > \text{NewStart}) \land (\text{ExistingStatus} \neq \text{'CANCELLED'})$$
+
+This mathematical formula guarantees that:
+* Partially overlapping, enclosed, or enclosing reservations are strictly rejected.
+* Exact boundary connections (e.g., 10:00 AM – 11:00 AM and 11:00 AM – 12:00 PM) succeed cleanly without false conflicts.
+* Concurrent reservations for *different* resources during the exact same timeframe succeed independently.
+
+### 2. Transaction Isolation & Performance Indexing
+* **Database Transactions**: All booking validations and inserts run inside a serialized transaction block, preventing parallel double-booking race conditions.
+* **Composite B-Tree Indexes**: The database schema enforces a compound index on `[resourceId, startTime, endTime]`. Conflict queries perform an indexed range scan instead of a full sequential scan.
+
+### 3. Full-Stack Architecture
+* **React Server Components (RSC)**: Dashboard metrics, catalog lists, and schedules are rendered on the server for minimal client bundle size and optimal initial page load.
+* **Server Actions**: Mutations utilize Next.js Server Actions with granular cache revalidation (`revalidatePath`).
+* **Zod Runtime Validation**: Every client input and API request is validated against strict schemas before hitting the database.
+
+---
+
+## 📊 Database Architecture
 
 ```mermaid
 erDiagram
@@ -84,217 +87,185 @@ erDiagram
         DateTime updatedAt
     }
 
-    resource_categories ||--o{ resources : "classifies (1:N)"
+    resource_categories ||--o{ resources : "categorizes (1:N)"
     users ||--o{ reservations : "books (1:N)"
-    resources ||--o{ reservations : "reserved_in (1:N)"
+    resources ||--o{ reservations : "allocated_to (1:N)"
 ```
 
-### Table Specifications:
-- `users`: Stores organization personnel with role-based access (`ADMIN`, `MEMBER`).
-- `resource_categories`: High-level taxonomy (Conference Rooms, Testing Equipment, Company Fleet, AV Gear).
-- `resources`: Physical items with capacity, location, operational health, and category relation.
-- `reservations`: Active and past bookings with composite index on `[resourceId, startTime, endTime]`.
+### Schema Details:
+* **`users`**: Personnel directory supporting role-based permissions (`ADMIN`, `MEMBER`).
+* **`resource_categories`**: Hierarchical grouping (e.g., Conference Rooms, Testing Equipment & Labs, Company Fleet).
+* **`resources`**: Physical assets with capacity constraints, location data, operational status, and foreign key relations.
+* **`reservations`**: Scheduled bookings linked to users and resources, indexed across time intervals.
 
 ---
 
-## 🚀 Step-by-Step Local Setup
+## 🔌 REST API Specification
 
-### 1. Prerequisites
-- **Node.js**: v18.18+ or v20+ (LTS)
-- **PostgreSQL**: v14+ (Local instance, Docker, Supabase, Neon, or Railway)
-- **Git**
+### Resources Endpoints
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` | `/api/resources` | List all resources with category and reservation details. |
+| `POST` | `/api/resources` | Create a new resource (requires admin privileges). |
+| `GET` | `/api/resources/:id` | Fetch detailed specifications and schedule for a single resource. |
+| `PATCH` | `/api/resources/:id` | Update resource metadata, capacity, location, or maintenance status. |
+| `DELETE` | `/api/resources/:id` | Delete a resource record. |
 
-### 2. Clone and Install Dependencies
-```bash
-git clone https://github.com/your-username/resource-reservation-system.git
-cd resource-reservation-system
-npm install
-```
+### Reservations Endpoints
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` | `/api/reservations` | List reservations (filterable by `resourceId`, `userId`, `status`). |
+| `POST` | `/api/reservations` | Create a reservation with atomic double-booking collision checks. |
+| `GET` | `/api/reservations/:id` | Fetch reservation details by ID. |
+| `PATCH` | `/api/reservations/:id` | Update reservation parameters or cancel (`status: "CANCELLED"`). |
+| `DELETE` | `/api/reservations/:id` | Hard-delete a reservation record. |
 
-### 3. Environment Configuration
-Create a `.env` file in the root directory (or copy from `.env.example`):
-```env
-# PostgreSQL Database Connection URL
-DATABASE_URL="postgresql://postgres:postgres@localhost:5432/reservation_db?schema=public"
-
-# Application Settings
-NEXT_PUBLIC_APP_NAME="PrimeReserve - Resource Reservation Management System"
-```
-
-### 4. Automated Database Migration & Setup Workflow
-PrimeReserve includes fully automated database migration and seeding scripts:
-
-```bash
-# Automated All-In-One Setup (Generates Prisma Client, Applies Migrations, & Seeds Data)
-npm run db:setup
-
-# OR run individual migration workflow steps:
-npm run prisma:generate     # 1. Generate strongly-typed Prisma Client
-npm run db:deploy           # 2. Automatically apply versioned PostgreSQL migrations (prisma/migrations)
-npm run db:seed             # 3. Populate database with realistic mock data
-
-# Optional commands during active development:
-npm run db:migrate          # Create a new Prisma migration during schema development
-npm run db:push             # Directly push schema changes without migration history
-npm run db:studio           # Launch Prisma Studio GUI database browser on port 5555
-```
-
-### 6. Start the Development Server
-```bash
-npm run dev
-```
-Open **[http://localhost:3000](http://localhost:3000)** in your browser.
-
----
-
-## 🧪 Automated Testing Suite (11 Core Rules & Conflict Prevention)
-
-PrimeReserve includes an automated verification test suite covering all 11 business rules and conflict-prevention constraints from the PrimeWave Lab assessment brief:
-
-```bash
-# Run the automated verification test suite
-npm test
-```
-
-#### Verified Acceptance Criteria:
-1. **Rule 1**: Rejection when start time equals end time (`start == end`).
-2. **Rule 2**: Rejection when start time is after end time (`start > end`).
-3. **Rule 3**: Duration constraints (minimum 15 minutes, maximum 24 hours).
-4. **Rule 4**: Overlap rejection across all vectors (partial, enclosed, enclosing intervals).
-5. **Rule 5**: Half-open boundary allowance (10:00–11:00 and 11:00–12:00 succeed without conflict).
-6. **Rule 6**: Multi-resource isolation (identical times allowed on different resources).
-7. **Rule 7**: Slot release on cancellation (`CANCELLED` status does not block new bookings).
-8. **Rule 8**: Maintenance protection (inactive/maintenance resources reject bookings).
-9. **Rule 9**: Server-side validation (malformed payloads, missing IDs, or short titles rejected).
-10. **Rule 10**: Resource attribute validation (capacity $\ge 1$, category, location).
-11. **Rule 11**: HTTP 409 `ConflictError` with descriptive error payload and conflicting reservation metadata.
-
----
-
-## 🔬 Testing the Conflict Prevention API Directly
-
-You can verify the double-booking algorithm using `curl` or Postman:
-
-#### Test 1: Successful Reservation
-```bash
-curl -X POST http://localhost:3000/api/reservations \
-  -H "Content-Type: application/json" \
-  -d '{
-    "title": "Hardware Validation",
-    "userId": "<USER_ID>",
-    "resourceId": "<RESOURCE_ID>",
-    "startTime": "2026-10-15T14:00:00Z",
-    "endTime": "2026-10-15T16:00:00Z",
-    "purpose": "Scope probe calibration"
-  }'
-```
-*Expected: HTTP 201 Created*
-
-#### Test 2: Conflicting Overlap Reservation (Double-Booking Trigger)
-```bash
-curl -X POST http://localhost:3000/api/reservations \
-  -H "Content-Type: application/json" \
-  -d '{
-    "title": "Overlapping Team Sync",
-    "userId": "<ANOTHER_USER_ID>",
-    "resourceId": "<SAME_RESOURCE_ID>",
-    "startTime": "2026-10-15T15:00:00Z",
-    "endTime": "2026-10-15T17:00:00Z"
-  }'
-```
-*Expected: HTTP 409 Conflict with descriptive payload:*
+#### Conflict Response Payload (HTTP 409)
 ```json
 {
   "success": false,
-  "error": "Scheduling conflict: \"Apex Executive Boardroom\" is already reserved for \"Hardware Validation\" from 02:00 PM to 04:00 PM.",
-  "conflictingReservation": { ... }
+  "error": "Scheduling conflict: \"Apex Executive Boardroom\" is already reserved for \"Quarterly Business Review\" by Sarah Connor from 10:00 AM to 11:30 AM.",
+  "conflictingReservation": {
+    "id": "cmv6xjnr...",
+    "title": "Quarterly Business Review",
+    "userName": "Sarah Connor",
+    "startTime": "2026-10-16T10:00:00.000Z",
+    "endTime": "2026-10-16T11:30:00.000Z"
+  }
 }
 ```
 
 ---
 
-## 📹 Scripted Outline for 3–5 Minute Demonstration Video
+## 🚀 Setup & Installation
 
-| Time Stamp | Section | Scripted Actions & Talking Points |
-| :--- | :--- | :--- |
-| **0:00 – 0:45** | **Introduction & Problem Context** | • Introduce yourself and PrimeReserve.<br>• Summarize PrimeWave Lab's business scenario: growing company facing scheduling confusion, overlapping bookings, and lack of visibility into equipment availability.<br>• Introduce the tech stack: Next.js App Router, TypeScript, PostgreSQL, Prisma, Tailwind CSS. |
-| **0:45 – 1:45** | **Dashboard & High-Level KPIs** | • Walk through `/` (Dashboard).<br>• Highlight KPIs: Active Resources, Today's Confirmed Bookings, Currently In-Use Resources, and Upcoming Bookings.<br>• Point out the live status badges and Quick Reservation trigger. |
-| **1:45 – 2:45** | **Resource Catalog & Filtering** | • Navigate to `/resources`.<br>• Demonstrate dynamic filtering: filter by Category (Conference Rooms, Labs, Fleet), Capacity thresholds, and Availability status.<br>• Show the Admin Resource Modal: creating a new resource and toggling a resource to "Under Maintenance" to prevent bookings. |
-| **2:45 – 3:45** | **Double-Booking Prevention (The Core Logic)** | • Open `/schedule` to show the visual hour-by-hour timeline view.<br>• Select a resource and create a confirmed booking (e.g., 2:00 PM – 4:00 PM).<br>• Attempt to create a second reservation for the exact same resource overlapping the slot (e.g., 3:00 PM – 5:00 PM).<br>• **Showcase the Conflict Alert**: explain how the atomic transaction caught the overlap (`existing.start < newEnd AND existing.end > newStart`) and returned an HTTP 409 Conflict. |
-| **3:45 – 4:30** | **Reservations Table & Cancellation Lifecycle** | • Navigate to `/reservations`.<br>• Show tabular view with filters (Upcoming, Past, Confirmed, Cancelled).<br>• Open booking details modal.<br>• Click "Cancel Reservation", show confirmation modal, and verify the time slot is immediately released for others. |
-| **4:30 – 5:00** | **Engineering Architecture & Conclusion** | • Highlight key engineering decisions: Prisma ACID transactions, composite index on `[resourceId, startTime, endTime]`, Zod runtime validation, and responsive mobile-first UI.<br>• Conclude with readiness for deployment and thank the PrimeWave Lab review team. |
+### 1. Prerequisites
+* **Node.js**: v18.18+ or v20+ (LTS)
+* **PostgreSQL**: v14+ (Local instance, Docker, or hosted cloud provider)
+* **npm** or **pnpm**
+
+### 2. Installation
+```bash
+# Clone the repository
+git clone https://github.com/Abinesh-j18/resource-reservation-system.git
+cd resource-reservation-system
+
+# Install dependencies
+npm install
+```
+
+### 3. Environment Setup
+Create a `.env` file in the root directory (based on `.env.example`):
+```env
+# PostgreSQL Database Connection URL
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/reservation_db?schema=public"
+
+# Application Title
+NEXT_PUBLIC_APP_NAME="PrimeReserve - Resource Reservation System"
+```
+
+### 4. Database Initialization & Automated Migrations
+```bash
+# Automated setup (Generates Prisma Client, runs migrations, and seeds initial data)
+npm run db:setup
+
+# Additional database utilities:
+npm run db:deploy           # Apply pending PostgreSQL migrations
+npm run db:seed             # Seed database with sample users and resources
+npm run db:studio           # Launch visual Prisma Studio database manager on port 5555
+```
+
+### 5. Running the Application
+```bash
+# Start development server
+npm run dev
+
+# Or build and launch production server
+npm run build
+npm run start
+```
+Open **[http://localhost:3000](http://localhost:3000)** in your browser.
 
 ---
 
-## 📁 Repository File Tree
+## 🧪 Automated Test Suites
+
+The system includes automated unit, validation, and live integration test suites:
+
+```bash
+# Run business rules and conflict algorithm verification (11 core test vectors)
+npm test
+
+# Run live HTTP API end-to-end integration tests against running server
+npm run test:e2e
+
+# Run linter verification
+npm run lint
+```
+
+### Verified Test Cases:
+1. Rejects reservations where `startTime == endTime`.
+2. Rejects reservations where `startTime > endTime`.
+3. Enforces duration boundaries (minimum 15 minutes, maximum 24 hours).
+4. Detects and rejects overlapping intervals for the same resource.
+5. Permits boundary bookings (e.g., 10:00–11:00 and 11:00–12:00 without false conflicts).
+6. Allows concurrent bookings for different resources at identical times.
+7. Verifies slot release upon reservation cancellation.
+8. Rejects bookings on resources under maintenance.
+9. Enforces Zod schema runtime validation on all inputs.
+10. Validates resource attributes (capacity $\ge 1$, valid category, location).
+11. Returns HTTP 409 Conflict with structured conflicting metadata.
+
+---
+
+## 📁 Project Directory Structure
 
 ```
 ├── app/
 │   ├── api/
-│   │   ├── reservations/
-│   │   │   └── route.ts             # REST API for reservations (HTTP 409 Conflict)
-│   │   └── resources/
-│   │       └── route.ts             # REST API for resource catalog
+│   │   ├── reservations/        # REST endpoints (/api/reservations & /api/reservations/[id])
+│   │   └── resources/           # REST endpoints (/api/resources & /api/resources/[id])
+│   ├── dashboard/page.tsx       # Dedicated Executive Dashboard route
 │   ├── reservations/
-│   │   └── page.tsx                 # My Reservations view with history & cancel
+│   │   ├── new/page.tsx         # Dedicated New Reservation booking form
+│   │   └── page.tsx             # Reservation management and cancellation table
 │   ├── resources/
-│   │   └── page.tsx                 # Resource Catalog page with dynamic filters
-│   ├── schedule/
-│   │   └── page.tsx                 # Interactive visual schedule timeline view
-│   ├── globals.css                  # Tailwind styles and custom palette tokens
-│   ├── layout.tsx                   # Root application layout with navigation
-│   └── page.tsx                     # Operations Dashboard with KPIs & quick booking
+│   │   ├── [id]/page.tsx        # Resource detail specification & upcoming queue
+│   │   └── page.tsx             # Filterable Resource Catalog
+│   ├── schedule/page.tsx        # Interactive hour-by-hour timeline schedule
+│   ├── error.tsx                # Error boundary
+│   ├── loading.tsx              # Loading skeleton
+│   ├── not-found.tsx            # Custom 404 page
+│   ├── layout.tsx               # Root application layout with navigation
+│   └── page.tsx                 # Main application dashboard
 ├── components/
-│   ├── dashboard/
-│   │   ├── kpi-cards.tsx            # KPI stat metric cards
-│   │   └── quick-booking.tsx        # Quick booking triggers & upcoming feeds
-│   ├── layout/
-│   │   ├── footer.tsx               # System footer
-│   │   └── navbar.tsx               # Global top navigation with brand & status
-│   ├── reservations/
-│   │   ├── cancel-dialog.tsx        # Cancellation confirmation modal
-│   │   ├── conflict-alert.tsx       # HTTP 409 conflict & validation banner
-│   │   ├── reservation-dialog.tsx   # Reservation booking form modal
-│   │   └── reservations-table-view.tsx # Filterable reservations data table
-│   ├── resources/
-│   │   ├── resource-card.tsx        # Resource display card with live status
-│   │   ├── resource-dialog.tsx      # Admin modal to create/edit resources
-│   │   └── resource-filters.tsx     # Filter toolbar (category, status, capacity)
-│   ├── schedule/
-│   │   └── timeline-view.tsx        # Interactive hour-by-hour timeline grid
-│   └── ui/                          # Reusable Radix UI & shadcn primitives
-│       ├── badge.tsx
-│       ├── button.tsx
-│       ├── card.tsx
-│       ├── dialog.tsx
-│       ├── input.tsx
-│       ├── label.tsx
-│       ├── select.tsx
-│       ├── table.tsx
-│       ├── tabs.tsx
-│       └── textarea.tsx
+│   ├── dashboard/               # KPI metric cards and quick reservation triggers
+│   ├── layout/                  # Navbar, responsive mobile drawer, and footer
+│   ├── reservations/            # Reservation forms, tables, cancel dialogs, conflict alerts
+│   ├── resources/               # Resource catalog cards, admin modals, filters
+│   ├── schedule/                # Timeline grid and calendar slots
+│   └── ui/                      # Base UI primitives (buttons, dialogs, badges, inputs)
 ├── lib/
-│   ├── actions/
-│   │   ├── reservation-actions.ts   # Server Actions for reservations
-│   │   └── resource-actions.ts      # Server Actions for resources & maintenance
-│   ├── prisma.ts                    # Singleton Prisma database client
-│   ├── reservation-service.ts       # Double-booking conflict prevention algorithm
-│   ├── utils.ts                     # UI class mergers & date utilities
-│   └── validations.ts               # Zod validation schemas
+│   ├── actions/                 # Next.js Server Actions for reservations and resources
+│   ├── demo-data.ts             # Realistic offline fallback repository
+│   ├── prisma.ts                # Singleton Prisma client
+│   ├── reservation-service.ts   # Core overlap algorithm & transaction handling
+│   ├── utils.ts                 # Formatting helpers and class mergers
+│   └── validations.ts           # Zod schemas for runtime validation
 ├── prisma/
-│   ├── schema.prisma                # Normalized PostgreSQL schema & composite indexes
-│   └── seed.ts                      # Multi-category, multi-resource seed script
-├── .env.example                     # Environment template
-├── next.config.mjs                  # Next.js configuration
-├── package.json                     # Project manifest and scripts
-├── postcss.config.mjs               # PostCSS configuration
-├── tailwind.config.ts               # Tailwind CSS theme configuration
-├── tsconfig.json                    # Strict TypeScript configuration
-└── README.md                        # Documentation, ER diagram & video outline
+│   ├── migrations/              # Versioned PostgreSQL migration history
+│   ├── schema.prisma            # Production PostgreSQL schema definition
+│   └── seed.ts                  # Database seeder script
+├── tests/
+│   ├── verify-rules.ts          # Business rules & overlap test suite (npm test)
+│   └── verify-live-e2e.ts       # Live HTTP integration test suite (npm run test:e2e)
+├── .eslintrc.json               # ESLint configuration
+├── package.json                 # Project dependencies and operational scripts
+├── tailwind.config.ts           # Tailwind CSS configuration
+└── tsconfig.json                # TypeScript strict configuration
 ```
 
 ---
 
 ## 📄 License
-Developed for the **PrimeWave Lab Software Engineering Internship Technical Assessment**.
-All rights reserved.
+MIT License. Created by [Abinesh-j18](https://github.com/Abinesh-j18).
